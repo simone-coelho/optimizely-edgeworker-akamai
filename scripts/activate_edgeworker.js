@@ -10,7 +10,7 @@ fs.readFile("./package.json", function(err, content) {
   let packageJson = JSON.parse(content);
   versionId = packageJson.config.edgeWorkerId;
 
-  if (versionId !== "NO_VERSION_FOUND") {
+  if (versionId && versionId !== "NO_VERSION_FOUND") {
     fs.readFile("./bundle.json", function(err, content) {
       if (err) throw err;
 
