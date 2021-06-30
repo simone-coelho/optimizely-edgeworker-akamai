@@ -47,6 +47,7 @@ let defaultConfig = DefaultConfig;
 let defaultConfigUpdated = false;
 // Account ID
 let ACCOUNT_ID = defaultConfig.accountId;
+let eventsEndpoint = defaultConfig.optlyEventsEndpoint;
 
 /**
  *  KV_STORAGE_ENABLED = coniguration will be downloaded from KV store
@@ -286,8 +287,7 @@ async function httpDispatcher(payload) {
     "Content-Length": jsonPayload.length,
   };
   options.body = jsonPayload;
-  //const url = "https://ew-optly-agent.optimizely.com/v1/events";
-  const url = "https://ew.logx.optimizely.com/v1/events";
+  const url = eventsEndpoint;
 
   try {
     const response = await httpRequest(url, options);
