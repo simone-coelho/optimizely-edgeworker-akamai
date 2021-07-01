@@ -67,6 +67,7 @@
     "decisions_cookie_expiration": 15,
     "datafileSource": "embedded",
     "accountId": "8543082612",
+    "optlyEventsEndpoint": "https://ew.logx.optimizely.com/v1/events",
     "autoUpdateActiveExperiments": true,
     "activeExperiments": "edge_worker_development_version_2,edge_worker_development,akamai_active_experiments",
     "sdkKey": "FFSer7NqrCooeLkyZP39s",

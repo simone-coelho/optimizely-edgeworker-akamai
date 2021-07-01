@@ -29,13 +29,11 @@ const decisionsKeyName = "decisions";
 const userCookieName = "optly_akamai_ew_user"; // Name of cookie that stores user identifier (visitorId) assignment
 const optlyUserIdsHeaderName = "optly-user-id";
 const userIdentifierKeyName = "user_identifier";
-const htmlVariable = "PMUSER_OPTIMIZELY_RESPONSE_HTML";
-const agentModeVariable = "PMUSER_ACTIVE_FLAGS_EXPERIMENTS";
-const userIdVariable = "PMUSER_USER_ID";
-const flagsListVariable = "PMUSER_FLAGS_LIST";
-const attributesListVariable_1 = "PMUSER_ATTRIBUTES_LIST_1";
-const attributesListVariable_2 = "PMUSER_ATTRIBUTES_LIST_2";
-const assignedDecisionsVariable = "PMUSER_ASSIGNED_DECISIONS";
+const userIdVariable = "PMUSER_OPTIMIZELY_USER_ID";
+const flagsListVariable = "PMUSER_OPTIMIZELY_FLAGS_LIST";
+const attributesListVariable_1 = "PMUSER_OPTIMIZELY_ATTR_LIST_1";
+const attributesListVariable_2 = "PMUSER_OPTIMIZELY_ATTR_LIST_2";
+const assignedDecisionsVariable = "PMUSER_OPTIMIZELY_DECISIONS";
 const cookieExpirationSecs = 30 * 24 * 60 * 60;
 const cookieExpirationInDays = 30;
 const delimeter = "&";
@@ -47,6 +45,7 @@ let defaultConfig = DefaultConfig;
 let defaultConfigUpdated = false;
 // Account ID
 let ACCOUNT_ID = defaultConfig.accountId;
+let eventsEndpoint = defaultConfig.optlyEventsEndpoint;
 
 /**
  *  KV_STORAGE_ENABLED = coniguration will be downloaded from KV store
@@ -286,8 +285,7 @@ async function httpDispatcher(payload) {
     "Content-Length": jsonPayload.length,
   };
   options.body = jsonPayload;
-  //const url = "https://ew-optly-agent.optimizely.com/v1/events";
-  const url = "https://ew.logx.optimizely.com/v1/events";
+  const url = eventsEndpoint;
 
   try {
     const response = await httpRequest(url, options);
