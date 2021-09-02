@@ -1,3 +1,5 @@
+// This is not a valid token...
+
 var edgekv_access_tokens = {
     "namespace-default": {
         "name": "default_token",
