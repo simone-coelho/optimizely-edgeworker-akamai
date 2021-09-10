@@ -33,6 +33,7 @@ const userIdVariable = "PMUSER_OPTIMIZELY_USER_ID";
 const flagsListVariable = "PMUSER_OPTIMIZELY_FLAGS_LIST";
 const attributesListVariable_1 = "PMUSER_OPTIMIZELY_ATTR_LIST_1";
 const attributesListVariable_2 = "PMUSER_OPTIMIZELY_ATTR_LIST_2";
+const forcedVariationVariable = attributesListVariable_2; //Temporary implementation
 const assignedDecisionsVariable = "PMUSER_OPTIMIZELY_DECISIONS";
 const cookieExpirationSecs = 30 * 24 * 60 * 60;
 const cookieExpirationInDays = 30;
@@ -59,13 +60,17 @@ const KV_GROUP = defaultConfig.kv_group;
 // this.#edgekv_uri = namespace.edgekv_uri || "https://edgekv.akamai-edge-svcs.net";
 // Fetch from KV store or Feature Variable?
 let activeExperimentList;
-const ACTIVE_EXPERIMENTS = "experiment1,experiment2";
+const ACTIVE_EXPERIMENTS =
+  "edge_worker_development,edge_worker_development_version_2";
 
 const urlPattern = new UrlPattern("/ew-agent(/*)");
 
 let params;
 // Development query parameters
 const OVERRIDE_USER_ID_PARAM = "override_user_id";
+const FORCED_FLAG = "forced_flag_key";
+const FORCED_EXPERIMENT = "forced_experiment_key";
+const FORCED_VARIATION = "forced_variation_key";
 // CDN Agent functionality
 const SDK_KEY_PARAM = "skd_key"; // not implemented
 const DATAFILE_SOURCE_PARAM = "datafile_source"; // not implemented
@@ -189,30 +194,41 @@ function buildVisitorsSnapshots(config, userId, decisionsJson, attributes) {
   const featuresMap = config.featuresMap;
   const newSessionId = generateUUID();
   let decisions = JSON.parse(decisionsJson);
+  //logger.log("PayloadDec: %s", JSON.stringify(decisions));
   if (decisions) {
     try {
       decisions.forEach((decision) => {
-        const feature = featuresMap[decision.featureKey];
-        const experimentsMap = feature.experimentsMap;
-        const experiment = experimentsMap[decision.experimentKey];
-        const variationsMap = experiment.variationsMap;
-        const variation = variationsMap[decision.variationKey];
-        const snapShot = deepClone(getSnapShot());
-        snapShot.decisions[0].campaign_id = experiment.id;
-        snapShot.decisions[0].experiment_id = experiment.id;
-        snapShot.decisions[0].variation_id = variation.id;
-        snapShot.events[0].entity_id = experiment.id;
-        snapShot.events[0].type = "campaign_activated";
-        snapShot.events[0].timestamp = new Date().getTime();
-        snapShot.events[0].uuid = generateUUID();
-        const newPayload = deepClone(
-          getPayloadVisitor(userId, attributes, newSessionId)
-        );
-        newPayload.snapshots.push(snapShot);
-        visitorsPayload.push(newPayload);
+        try {
+          const feature = featuresMap[decision.featureKey];
+          const experimentsMap = feature.experimentsMap;
+          const experiment = experimentsMap[decision.experimentKey];
+          if (experiment) {
+            // logger.log("ExKey: %s", decision.featureKey);
+            const variationsMap = experiment.variationsMap;
+            const variation = variationsMap[decision.variationKey];
+            const snapShot = deepClone(getSnapShot());
+            snapShot.decisions[0].campaign_id = experiment.id;
+            snapShot.decisions[0].experiment_id = experiment.id;
+            snapShot.decisions[0].variation_id = variation.id;
+            snapShot.events[0].entity_id = experiment.id;
+            snapShot.events[0].type = "campaign_activated";
+            snapShot.events[0].timestamp = new Date().getTime();
+            snapShot.events[0].uuid = generateUUID();
+            const newPayload = deepClone(
+              getPayloadVisitor(userId, attributes, newSessionId)
+            );
+            newPayload.snapshots.push(snapShot);
+            visitorsPayload.push(newPayload);
+          }
+        } catch (err) {
+          logger.log(err.message);
+        }
       });
     } catch (error) {
-      logger.log(error.message);
+      logger.log(
+        "ErrPayload: %s",
+        decision.featureKey + " -- Msg: " + error.message
+      );
     }
   }
 
@@ -271,13 +287,14 @@ function getDefaultPayload(config, userId, decisionsJson, attributes) {
 
 /**
  * Custom event dispatcher required to dispatch events back to the Optimizely "logx" endpoint
- * Akamai has several restrictions and limitations that require a custom implementation such
+ * Akamai has several restrictions and limitations that require a custom implementation
  *
  * @param {*} payload
  */
 async function httpDispatcher(payload) {
   const options = {};
   const jsonPayload = JSON.stringify(JSON.parse(payload));
+  // logger.log("Payld: %s", jsonPayload);
 
   options.method = "POST";
   options.headers = {
@@ -764,7 +781,7 @@ function getActiveExperiments(flagList) {
   }
 
   activeExperimentList = trimArray(
-    (defaultConfig.activeExperiments || ACTIVE_EXPERIMENTS || "").split(",")
+    (ACTIVE_EXPERIMENTS || defaultConfig.activeExperiments || "").split(",")
   );
   return activeExperimentList;
 }
@@ -774,11 +791,14 @@ async function getDecisionsForRequest(
   agentMode,
   userId,
   flagsToDecide,
-  disableDecissionEvent = true,
+  disableDecisionEvent = true,
   override_user_id = false,
   storedCookieDecisions = undefined,
   validStoredDecisions,
-  attributes = undefined
+  attributes = undefined,
+  forcedFlagKey = undefined,
+  forcedExperimentKey = undefined,
+  forcedVariationKey = undefined
 ) {
   let allDecisions = []; // concatenated array that will contain all valid previously stored valid and new decisions
   let optimizely; // Optimizely instance required to generate decisions and event tracking
@@ -786,43 +806,72 @@ async function getDecisionsForRequest(
   let reasons; // An array of relevant error and log messages, in chronological order
   let decision; // Used to access an individual OptimizelyDecision object from the decisions array
   let decisions; // Array of all OptimizelyDecision objects for the current user
+  let useForcedVariation = false;
+  if (forcedFlagKey !== undefined) {
+    useForcedVariation =
+      forcedFlagKey && forcedExperimentKey && forcedVariationKey;
+  }
 
   if (arrayIsValid(flagsToDecide) && ACTIVE_EXPERIMENTS) {
     optimizely = await optimizelyInit(defaultConfig.sdkKey, false);
-    if (attributes) {
+    if (attributes && !useForcedVariation) {
       user = optimizely.createUserContext(userId);
     } else {
       user = optimizely.createUserContext(userId, attributes);
     }
 
-    if (disableDecissionEvent) {
-      decisions = user.decideForKeys(getActiveExperiments(), [
-        optimizelyOptions.DISABLE_DECISION_EVENT,
-      ]);
-    } else {
-      decisions = user.decideForKeys(getActiveExperiments(), [
-        optimizelyOptions.DISABLE_DECISION_EVENT,
-      ]);
-    }
-
     try {
-      flagsToDecide.forEach(function(flagKey) {
-        decision = decisions[flagKey];
-        const assignedVariation = decision["variationKey"];
-        const assignedExperiment = decision["ruleKey"];
-        if (assignedVariation) {
-          allDecisions.push({
-            featureKey: flagKey,
-            variationKey: assignedVariation,
-            experimentKey: assignedExperiment,
-          });
+      if (!useForcedVariation) {
+        if (disableDecisionEvent) {
+          decisions = user.decideForKeys(getActiveExperiments(), [
+            optimizelyOptions.DISABLE_DECISION_EVENT,
+          ]);
+        } else {
+          decisions = user.decideForKeys(getActiveExperiments(), [
+            optimizelyOptions.DISABLE_DECISION_EVENT,
+          ]);
         }
-      });
+
+        flagsToDecide.forEach(function(flagKey) {
+          if (decisions[flagKey]) {
+            decision = decisions[flagKey];
+            const assignedVariation = decision["variationKey"];
+            const assignedExperiment = decision["ruleKey"];
+            if (
+              assignedVariation &&
+              assignedExperiment.indexOf("-rollout-") === -1
+            ) {
+              allDecisions.push({
+                featureKey: flagKey,
+                variationKey: assignedVariation,
+                experimentKey: assignedExperiment,
+              });
+            } else {
+              try {
+                reasons.push(decision["reasons"]);
+              } catch (err0or) {
+                logger.log("ReasonsError: %s", error.message);
+              }
+            }
+          }
+        });
+      } else {
+        allDecisions.push({
+          featureKey: forcedFlagKey,
+          variationKey: forcedVariationKey,
+          experimentKey: forcedExperimentKey,
+        });
+      }
     } catch (error) {
       logger.log("FTDError: %s", error.message);
     }
 
-    if (!agentMode && override_user_id !== "true" && storedCookieDecisions) {
+    if (
+      !agentMode &&
+      !useForcedVariation &&
+      override_user_id !== "true" &&
+      storedCookieDecisions
+    ) {
       allDecisions = allDecisions.concat(validStoredDecisions);
     }
 
@@ -833,12 +882,12 @@ async function getDecisionsForRequest(
       attributes
     );
 
-    reasons = decision["reasons"];
+    // reasons = decision["reasons"];
     if (arrayIsValid(reasons)) {
       logger.log("Reasons: %s", JSON.stringify(reasons));
     }
   } else {
-    if (!agentMode) allDecisions = validStoredDecisions;
+    if (!agentMode && !useForcedVariation) allDecisions = validStoredDecisions;
   }
 
   return [allDecisions, reasons];
@@ -866,6 +915,27 @@ async function getRequestOptlyDecisions(request) {
     // const datafile_source = params.get(DATAFILE_SOURCE_PARAM);
     const flags_query_param = params.get(FLAGS_PARAM);
     const attributes_query_param = params.get(ATTRIBUTES_PARAM);
+
+    // Forced variation support
+    // const FORCED_FLAG = "forced_flag_key"
+    // const FORCED_EXPERIMENT = "forced_experiment_key"
+    // const FORCED_VARIATION = "forced_variation_key"
+    const forced_flag_key = params.get(FORCED_FLAG);
+    const forced_experiment_key = params.get(FORCED_EXPERIMENT);
+    const forced_variation_key = params.get(FORCED_VARIATION);
+    const useForcedVariation =
+      forced_flag_key && forced_experiment_key && forced_variation_key;
+    if (useForcedVariation) {
+      request.setVariable(
+        forcedVariationVariable,
+        forced_flag_key +
+          "," +
+          forced_experiment_key +
+          "," +
+          forced_variation_key
+      );
+    }
+
     if (override_user_id === "true") {
       [user_id_query_param, isNewUser] = getUserId(
         null,
@@ -909,22 +979,31 @@ async function getRequestOptlyDecisions(request) {
         cookies
       );
 
-      if (urlValidForTesting) { // will always return true as this functionality is not yet implemented        
+      if (urlValidForTesting) {
+        // will always return true as this functionality is not yet implemented
         await initConfiguration();
-        
+
         // Do not check for stored decisions on new users. If the user ID cookie is missing but the decisions cookie
         // exists, we need to treat this operation as if we are dealing with a brand new visitor
-        if (!isNewUser) {
-          storedCookieDecisions = deserializeDecisionsFromCookie(cookies); 
+        if (!isNewUser && !useForcedVariation) {
+          storedCookieDecisions = deserializeDecisionsFromCookie(cookies);
         }
 
         // get previously stored decision from the cookie
-        if (storedCookieDecisions || override_user_id === "true") {
+        if (
+          (storedCookieDecisions || override_user_id === "true") &&
+          !useForcedVariation
+        ) {
           flagsToDecide = storedCookieDecisions
             ? getActiveExperiments(storedCookieDecisions)
             : getActiveExperiments();
         } else {
-          flagsToDecide = getActiveExperiments();
+          if (useForcedVariation) {
+            //Force a variation
+            flagsToDecide = [forced_flag_key];
+          } else {
+            flagsToDecide = getActiveExperiments();
+          }
         }
 
         //  Save flags that require a new decision to a user variable. These flags will be retrieved in the response event handler
@@ -932,7 +1011,11 @@ async function getRequestOptlyDecisions(request) {
         //  does not support "POST" in sub-requests, but onClientResponse and responseProvider do suppport it.
         request.setVariable(flagsListVariable, (flagsToDecide || "").join());
 
-        if (override_user_id !== "true" && storedCookieDecisions) {
+        if (
+          override_user_id !== "true" &&
+          !useForcedVariation &&
+          storedCookieDecisions
+        ) {
           //  ToDo - where do we get this list of keys from? KV store?
           invalidStoredDecisions = getInvalidDecisions(storedCookieDecisions);
           validStoredDecisions = getValidStoredDecisions(storedCookieDecisions);
@@ -946,9 +1029,12 @@ async function getRequestOptlyDecisions(request) {
           DISABLE_DECISION_EVENT,
           override_user_id,
           storedCookieDecisions,
-          validStoredDecisions
+          validStoredDecisions,
+          null,
+          forced_flag_key,
+          forced_experiment_key,
+          forced_variation_key
         );
-
         // setRequestHeaders(request, userId, allDecisions);
       }
     }
@@ -966,7 +1052,6 @@ async function onClientRequest(request) {
   // Get decisions for the current visitor and set the origin headers with all valid decisions
   // The decisions object will contain an array of objects with featureKey, variationKey and experimentKey
   let [decisions, reasons] = await getRequestOptlyDecisions(request);
-
   // Do something with the decisions here...
   /******************** Your code starts here *******************/
 
@@ -1055,6 +1140,7 @@ function getValidTimeStamp(daysToAdd) {
 async function dispatchDecisionEvent(request, response) {
   let config;
   let flagsToDecide;
+  let forcedExperimentArray;
   let attributes;
   let decision;
   let decisions;
@@ -1063,6 +1149,10 @@ async function dispatchDecisionEvent(request, response) {
   let assignedDecisions;
   let assignedUserId;
   let user;
+  let forcedVariationKey;
+  let forcedExperimentKey;
+  let forcedFlagKey;
+  let useForcedVariation = false;
 
   IN_AGENT_MODE = request.getVariable(inAgentModeVariable) === "true";
   if (IN_AGENT_MODE && AGENT_MODE_ENABLED) {
@@ -1077,8 +1167,21 @@ async function dispatchDecisionEvent(request, response) {
   assignedDecisions = request.getVariable(assignedDecisionsVariable);
   assignedUserId = request.getVariable(userIdVariable);
 
+  // Forced variation support
+  let tempForcedVariation = request.getVariable(forcedVariationVariable);
+  if (tempForcedVariation) {
+    //logger.log("_tempForVar", tempForcedVariation);
+    forcedExperimentArray = trimArray((tempForcedVariation || "").split(","));
+    if (arrayIsValid(forcedExperimentArray)) {
+      forcedFlagKey = forcedExperimentArray[0];
+      forcedExperimentKey = forcedExperimentArray[1];
+      forcedVariationKey = forcedExperimentArray[2];
+      useForcedVariation =
+        forcedFlagKey && forcedExperimentKey && forcedVariationKey;
+    }
+  }
+  
   // Set decisions in cookie with an experiration date for stickiness
-
   const isUrlValidForDecision = verifyCurrentUrl(request.url); // ToDo - evaluate rules?
   if (assignedUserId && isUrlValidForDecision) {
     let flagKeysToDecide = request.getVariable(flagsListVariable);
@@ -1087,25 +1190,43 @@ async function dispatchDecisionEvent(request, response) {
     if (arrayIsValid(flagsToDecide)) {
       await initConfiguration();
       const optimizely = await optimizelyInit(defaultConfig.sdkKey, false);
-      if (AGENT_MODE_ENABLED && IN_AGENT_MODE && attributes) {
-        user = optimizely.createUserContext(assignedUserId, attributes);
-      } else {
-        user = optimizely.createUserContext(assignedUserId);
-      }
-      decisions = user.decideForKeys(flagsToDecide);
-      //logger.log("DPEVFTD: %s", JSON.stringify(flagsToDecide));
-      flagsToDecide.forEach(function(flagKey) {
-        decision = decisions[flagKey];
-        const assignedVariation = decision["variationKey"];
-        const assignedExperiment = decision["ruleKey"];
-        if (assignedVariation) {
-          allDecisions.push({
-            featureKey: flagKey,
-            variationKey: assignedVariation,
-            experimentKey: assignedExperiment,
-          });
+
+      if (!useForcedVariation) {
+        if (AGENT_MODE_ENABLED && IN_AGENT_MODE && attributes) {
+          user = optimizely.createUserContext(assignedUserId, attributes);
+        } else {
+          user = optimizely.createUserContext(assignedUserId);
         }
-      });
+        decisions = user.decideForKeys(flagsToDecide);
+        //logger.log("DPEVFTD: %s", JSON.stringify(flagsToDecide));
+        flagsToDecide.forEach(function(flagKey) {
+          decision = decisions[flagKey];
+          const assignedVariation = decision["variationKey"];
+          const assignedExperiment = decision["ruleKey"];
+          if (
+            assignedVariation &&
+            assignedExperiment.indexOf("-rollout-") === -1
+          ) {
+            allDecisions.push({
+              featureKey: flagKey,
+              variationKey: assignedVariation,
+              experimentKey: assignedExperiment,
+            });
+          }
+        });
+      } else {
+        const _forcedVariationSet = optimizely.setForcedVariation(
+          forcedExperimentKey,
+          assignedUserId,
+          forcedVariationKey
+        );
+        allDecisions.push({
+          featureKey: forcedFlagKey,
+          variationKey: forcedVariationKey,
+          experimentKey: forcedExperimentKey,
+        });
+        //logger.log("InForcedVarSet: %s", _forcedVariationSet.toString());
+      }
 
       try {
         config = optimizely.getOptimizelyConfig();
@@ -1154,48 +1275,47 @@ async function onClientResponse(request, response) {
       response
     );
 
-    logger.log("ResponseDec: %s", JSON.stringify(allDecisions));
-
+    //logger.log("ResponseDec: %s", JSON.stringify(allDecisions));
     /******************** Your code starts here *******************/
 
     /******************** Your code ends here ********************/
   } catch (err) {
     // Catch any errors and return the appropriate response
     logger.log("Error in onClientResponse: %s", err.message);
-    return request.respondWith(500, {}, err.message);
+    //return request.respondWith(500, {}, err.message);
   }
 }
 
 // Used for testing in the browser. You should disable for production.
-async function onOriginResponse(request, response) {
-  let attributes = {};
-  try {
-    // let flagKeysToDecide = request.getVariable(flagsListVariable);
-    let assignedDecisions = request.getVariable(assignedDecisionsVariable);
-    let assignedUserId = request.getVariable(userIdVariable);
+// async function onOriginResponse(request, response) {
+//   let attributes = {};
+//   try {
+//     let flagKeysToDecide = request.getVariable(flagsListVariable);
+//     let assignedDecisions = request.getVariable(assignedDecisionsVariable);
+//     let assignedUserId = request.getVariable(userIdVariable);
 
-    // prettier-ignore
-    const htmlResponse = '<html><body>'
-            // + '<h1>HTTP Response: ' + httpResponse + '</h1>'        
-            + '<h1>User: ' + assignedUserId + '</h1>'
-            + '<h2>Decisions: ' + assignedDecisions + '</h2>'
-            // + '<h2>Attributes: ' + JSON.stringify(attributes) + '</h2>'
-            // + '<h2>Decisions Array: ' + JSON.stringify(decisionsPayload) + '</h2>'
-            // + '<h2>Decisions Payload: ' + (JSON.stringify(decisionsPayload)).slice(0, 1800) + '</h2>'
-            + '</body></html>';
+//     // prettier-ignore
+//     const htmlResponse = '<html><body>'
+//       // + '<h1>HTTP Response: ' + httpResponse + '</h1>'
+//       + '<h1>User: ' + assignedUserId + '</h1>'
+//       + '<h2>Decisions: ' + assignedDecisions + '</h2>'
+//       // + '<h2>Attributes: ' + JSON.stringify(attributes) + '</h2>'
+//       // + '<h2>Decisions Array: ' + JSON.stringify(decisionsPayload) + '</h2>'
+//       // + '<h2>Decisions Payload: ' + (JSON.stringify(decisionsPayload)).slice(0, 1800) + '</h2>'
+//         + '</body></html>';
 
-    request.respondWith(
-      200,
-      {
-        /* "Content-Type": "application/json" */
-      },
-      htmlResponse
-    );
-  } catch (err) {
-    logger.log("Error in onOriginResponse: %s", err.message);
-    return request.respondWith(500, {}, err.message);
-  }
-}
+//     request.respondWith(
+//       200,
+//       {
+//         "Content-Type": "application/json",
+//       },
+//       htmlResponse
+//     );
+//   } catch (err) {
+//     logger.log("Error in onOriginResponse: %s", err.message);
+//     return request.respondWith(500, {}, err.message);
+//   }
+// }
 
 // async function responseProvider(request) {
 // }
@@ -1203,6 +1323,6 @@ async function onOriginResponse(request, response) {
 export default {
   onClientResponse,
   onClientRequest,
-  onOriginResponse,
+  // onOriginResponse,
   // responseProvider,
 };
