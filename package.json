@@ -6,7 +6,7 @@
     "description": "Edge-Worker implementation of the Optimizely Javascript SDK",
     "main": "index.js",
     "config": {
-        "bundleVersion": "10250",
+        "bundleVersion": "10280",
         "rootPath": "C:\\Users\\scoelho\\Documents\\Amadalis\\_akamai_ew\\dist",
         "distributionRelativePath": "dist",
         "edgeWorkerId": "6152"
