@@ -60,8 +60,7 @@ const KV_GROUP = defaultConfig.kv_group;
 // this.#edgekv_uri = namespace.edgekv_uri || "https://edgekv.akamai-edge-svcs.net";
 // Fetch from KV store or Feature Variable?
 let activeExperimentList;
-const ACTIVE_EXPERIMENTS =
-  "edge_worker_development,edge_worker_development_version_2";
+const ACTIVE_EXPERIMENTS = "";
 
 const urlPattern = new UrlPattern("/ew-agent(/*)");
 
